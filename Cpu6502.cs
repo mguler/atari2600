@@ -17,16 +17,8 @@ public enum StatusFlags : byte
 
 /// <summary>
 /// 6502/6507 CPU core (legal opcodes complete).
-/// Cal
-/// 
-/// 
-/// 
-///  
-/// l
-/// 
-/// ed one CPU cycle at a time via Clock().
-/// <  /summary>
-/// 
+/// Called one CPU cycle at a time via Clock().
+/// </summary>
 public sealed class Cpu6502
 {
     private readonly IBus _bus;

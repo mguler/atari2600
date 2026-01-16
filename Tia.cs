@@ -139,8 +139,10 @@ namespace Atari2600Emu
         private ushort _lfsr9_0 = 0x01FF, _lfsr9_1 = 0x01FF;
 
         // Visible geometry (NTSC-ish)
+        // River Raid uses part of overscan for HUD/logo; if we hard-crop to 192
+        // lines, the bottom HUD may disappear. Use a taller window.
         public const int VisibleWidth = 160;
-        public const int VisibleHeight = 192;
+        public const int VisibleHeight = 230;
         public const int ColorClocksPerScanline = 228;
         public const int TotalScanlinesNTSC = 262;
 
@@ -159,7 +161,9 @@ namespace Atari2600Emu
         private const int MaxScanlinesSafety = 400;
         private const int VisibleClockEnd = 228;    // exclusive => 160 clocks
 
-        private const int DefaultVisibleStart = 40;
+        // Start the visible window higher so that VisibleHeight can still reach
+        // the bottom of the 262-line frame (keeps the HUD/logo visible).
+        private const int DefaultVisibleStart = 32;
         private int _visibleStart = DefaultVisibleStart;
 
         public byte[] FramebufferBgra { get; } = new byte[VisibleWidth * VisibleHeight * 4];
@@ -751,16 +755,10 @@ namespace Atari2600Emu
         {
             if (!IgnoreVBlank && (_vblank & 0x02) != 0) return;
 
-            // Some kernels (incl. River Raid) don't always generate a clean early
-            // VBLANK falling-edge every frame. If VBLANK is already off, we would keep
-            // the default visible start and potentially crop the bottom HUD (logo/fuel)
-            // off-screen. Lock the visible start to the first scanline where VBLANK is
-            // observed off near the top of the frame.
-            if (!_vblankFellThisFrame && (_vblank & 0x02) == 0 && _sl < 80)
-            {
-                _visibleStart = _sl;
-                _vblankFellThisFrame = true;
-            }
+            // Visible window start is set either to the default (covers full frame)
+            // or to the scanline where VBLANK falls (when the game provides it).
+            // Do not "auto-lock" to scanline 0 when VBLANK starts low; that can
+            // crop the bottom HUD/logo in River Raid.
 
             int y;
             if (!IgnoreVisibleWindow)
@@ -860,10 +858,10 @@ WriteBgraPixel(x, y, outc);
 
         private bool IsPlayfieldDotOn(int pixelX)
         {
-            // Playfield bits update on 4-color-clock boundaries, but many kernels rely
-            // on the exact phase alignment. A small +1CC phase shift improves River
-            // Raid's bridge/gauge edges (avoids the last-right segment dropping).
-            int dot = (pixelX + 1) >> 2; // nominally 0..39
+            // Playfield is 20 bits per half, each bit spans 4 visible pixels.
+            // Keep the mapping strictly aligned to pixelX/4.
+            int dot = pixelX >> 2; // 0..39
+            if (dot < 0) dot = 0;
             if (dot > 39) dot = 39;
             int halfDot = dot < 20 ? dot : dot - 20;
 
@@ -873,8 +871,10 @@ WriteBgraPixel(x, y, outc);
 
             if (halfDot < 4)
             {
-                int i = halfDot;      // 0..3
-                int bit = 7 - i;      // 7,6,5,4 (PF0 displayed reversed)
+                // PF0 uses bits 4..7. Display order is reversed relative to the byte.
+                // Most kernels assume PF0 bit4 is the rightmost of the PF0 nibble.
+                // Mapping: halfDot 0..3 -> PF0 bits 4..7 (LSB->MSB)
+                int bit = 4 + halfDot; // 4,5,6,7
                 return ((_pf0 >> bit) & 1) != 0;
             }
             if (halfDot < 12)
@@ -1073,9 +1073,9 @@ private int MissileWidthFromNusiz(byte nusiz)
 
     public static class TiaPalette
 {
-    // NTSC-ish YIQ conversion with a more standard hue phase (22.5° steps).
-    // This yields much more authentic River Raid colors than the earlier
-    // hand-tuned hue table.
+    // NTSC-ish YIQ conversion.
+    // This is not a perfect CRT simulation, but it's tuned to match common
+    // emulator palettes better (less magenta shift, more accurate blues/greys).
     //
     // Notes:
     // - TIA color is effectively 7-bit; bit0 is ignored on hardware. We mask it.
@@ -1088,10 +1088,10 @@ private int MissileWidthFromNusiz(byte nusiz)
         int hue = (c >> 4) & 0x0F;
         int lum = c & 0x0F;
 
-        // Luma: 0..15 -> 0..1 with a slight gamma for nicer darks.
+        // Luma: 0..15 -> 0..1.
+        // Keep a small pedestal and a mild gamma so dark levels don't crush.
         double y = lum / 15.0;
-        y = Math.Pow(y, 1.18);
-        y = 0.02 + y * 0.98;
+        y = 0.06 + Math.Pow(y, 1.05) * 0.94;
 
         if (hue == 0)
         {
@@ -1100,10 +1100,12 @@ private int MissileWidthFromNusiz(byte nusiz)
         }
 
         // Chroma: keep it lower in dark luma levels.
-        double sat = 0.55 * (0.35 + 0.65 * y);
+        // The previous tuning was too saturated and shifted toward magenta.
+        double sat = 0.42 * (0.25 + 0.75 * y);
 
-        // 16 hue steps. A small phase offset aligns better with common NTSC palettes.
-        double ang = ((hue * 22.5) + 33.0) * Math.PI / 180.0;
+        // 16 hue steps. Use a small negative phase offset to better align
+        // River Raid's sky/river hues with typical NTSC palettes.
+        double ang = ((hue * 22.5) - 10.0) * Math.PI / 180.0;
         double i = sat * Math.Cos(ang);
         double q = sat * Math.Sin(ang);
 
